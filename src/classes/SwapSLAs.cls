@@ -5,7 +5,7 @@ public class SwapSLAs extends BatchableProcessStep {
 	public override Database.Querylocator start(Database.BatchableContext btx) {
 		return Database.getQueryLocator([select SLA__c from Account where SLA__c in ('Gold','Bronze')]);
 	}
-	
+
 	public override void execute(Database.BatchableContext btx, List<SObject> scope) {
 		List<Account> accs = (List<Account>) scope;
 		for (Account a : accs) {
@@ -14,7 +14,7 @@ public class SwapSLAs extends BatchableProcessStep {
 		}
 		update accs;
 	}
-	
+
 	public override void finish(Database.BatchableContext btx) {
 		// Complete this ProcessStep
 		complete();

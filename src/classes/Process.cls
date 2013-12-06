@@ -11,6 +11,6 @@ global virtual interface Process {
 	Runnable advance();
 	// Do we have more jobs/tasks to complete in this process?
 	boolean hasNext();
-	// Finish the process 
+	// Finish the process
 	void finish();
 }

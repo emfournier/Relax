@@ -1,0 +1,434 @@
+<project name="Salesforce Ant tasks" default="deployCode" basedir="." xmlns:sf="antlib:com.salesforce">
+
+
+	<target name="antInit">
+		<antversion property="antversion"/>
+		<echo message="Ant version: ${antversion}" level="info"/>
+		<echo message="Running ${ant.project.name} in ${ant.file}" level="info"/>
+		<echo message="Ant home is ${ant.home}" level="info"/>
+
+		<tstamp>
+			<format property="TStart" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Started at: ${TStart}</echo>
+
+		<property file="build.properties"/>
+		<property environment="env"/>
+	</target>
+
+
+	<target name="timeStampStart">
+		<tstamp>
+			<format property="TStart" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Task started at: ${TStart}</echo>
+	</target>
+
+
+	<target name="diagnostics" description="Run Ant diagnostics">
+			<diagnostics/>
+	</target>
+
+
+	<target name="deployInit" depends="antInit">
+
+		<!-- Deploy all code in the src/ directory and run all tests -->
+
+		<!-- Check environment and galaxy properties... -->
+		<fail message="Property sf.galaxy is not set; allowed values are: 'PM', 'ST', 'GO', 'UP'" unless="sf.galaxy" />
+		<fail message="Property sf.environment is not set; allowed values are: 'Development', 'Integration', 'Release[-n.m]', 'UAT', 'Staging', 'Production', 'Hotfix', Training" unless="sf.environment" />
+		<condition property="legal-sf.galaxy" value="true">
+			<matches pattern="^(PM|ST|GO|UP)$" string="${sf.galaxy}" casesensitive="false"/>
+		</condition>
+		<fail message="Unknown galaxy ${sf.galaxy}; allowed values (for sf.galaxy property) are: 'PM', 'ST', 'GO', 'UP'"
+			unless="legal-sf.galaxy"/>
+		<condition property="legal-sf.environment" value="true">
+			<matches pattern="^(Development|Integration|UAT|Staging|Production|Release(-\d+\.?\d*)?|Hotfix|Training|DE)$" string="${sf.environment}" casesensitive="false"/>
+		</condition>
+		<fail message="Unknown environment ${sf.environment}; allowed values (for sf.environment) are: 'Development', 'Integration', 'Release[-n.m]' 'UAT', 'Staging', 'Production', 'Hotfix', Training"
+			unless="legal-sf.environment"/>
+		<condition property="is-production" value="true">
+			<matches pattern="^(Production|DE)$" string="${sf.environment}" casesensitive="false"/>
+		</condition>
+
+		<echo message="Deploy/test/validate all code in the src/ directory to ${sf.environment} for the UMN CRM Salesforce ${sf.galaxy} Galaxy" level="info"/>
+
+		<!-- Perform some property value checks -->
+		<fail message="Property sf.serverUrl is not set" unless="sf.serverUrl" />
+		<fail message="Property sf.userName is not set" unless="sf.userName" />
+		<fail message="Property sf.password is not set" unless="sf.password" />
+		<fail message="Property sf.sboxName is not set" unless="sf.sboxName" />
+
+		<echo message="Target is ${sf.userName} at ${sf.serverUrl}" level="info"/>
+
+		<!-- Check target URL for correct Salesforce location... -->
+		<condition property="valid-url" value="true">
+			<xor>
+				<and>
+					<matches pattern="login\.salesforce" string="${sf.serverUrl}" casesensitive="false"/>
+					<isset property="is-production"/>
+				</and>
+				<and>
+					<matches pattern="test\.salesforce" string="${sf.serverUrl}" casesensitive="false"/>
+					<not><isset property="is-production"/></not>
+				</and>
+			</xor>
+		</condition>
+		<fail message="Value ${sf.serverUrl} for property sf.serverUrl is incorrect for a ${sf.environment} environment" unless="valid-url" />
+
+		<!-- Make some environment-specific proclamations about the value of sf.runAllTestsOnDeploy... -->
+		<condition property="basicMessage" value="Unit tests WILL run as part of any code deployment (default for PRODUCTION regardless of sf.runAllTestsOnDeploy property); Managed package unit tests will NOT run" else="Unit tests WILL NOT run during deployment">
+			<isset property="is-production"/>
+		</condition>
+		<condition property="messageDefault" value="${basicMessage}" else="Property sf.runAllTestsOnDeploy is not set; ${basicMessage}">
+				<isset property="sf.runAllTestsOnDeploy"/>
+		</condition>
+
+		<condition property="messageReTests" value="All unit tests WILL run during deployCode[default] deployment INCLUDING all managed package namespaces" else="${messageDefault}">
+			<and>
+				<istrue value="${sf.runAllTestsOnDeploy}"/>
+				<isset property="sf.runAllTestsOnDeploy"/>
+			</and>
+		</condition>
+		<condition property="messageReTestsLevel" value="info" else="warning">
+			<xor>
+				<and>
+					<istrue value="${sf.runAllTestsOnDeploy}"/>
+					<isset property="sf.runAllTestsOnDeploy"/>
+				</and>
+				<isset property="is-production"/>
+			</xor>
+		</condition>
+		<echo message="${messageReTests}" level="${messageReTestsLevel}"/>
+
+		<condition property="messageReTestsWarn" value="WARNING: all unit tests should be run as part of your final build/deployment before committing code to the repository!" else="">
+			<and>
+				<or>
+					<and>
+						<isfalse value="${sf.runAllTestsOnDeploy}"/>
+						<isset property="sf.runAllTestsOnDeploy"/>
+					</and>
+					<not><isset property="sf.runAllTestsOnDeploy"/></not>
+				</or>
+				<not>
+					<isset property="is-production"/>
+				</not>
+			</and>
+		</condition>
+		<condition property="messageReTestsWarnLevel" value="warning" else="info">
+			<isfalse value="${sf.runAllTestsOnDeploy}"/>
+		</condition>
+		<echo message="${messageReTestsWarn}" level="${messageReTestsWarnLevel}"/>
+
+		<!-- Check polling and maximum wait properties -->
+		<condition property="pollfreqMessage" value="Property sf.pollFreq is unset; defaulting Salesforce server polling frequency to 60 seconds (60,000 milliseconds)" else="Salesforce server polling set by property sf.pollFreq to every ${sf.pollFreq} milliseconds">
+			<not><isset property="sf.pollFreq"/></not>
+		</condition>
+		<condition property="pollfreqMessageWarnLevel" value="info" else='warn'>
+			<isset property="sf.pollFreq"/>
+		</condition>
+		<echo message="${pollfreqMessage}" level="${pollfreqMessageWarnLevel}"/>
+		<condition property="sf.pollFreq" value="60000">
+			<not><isset property="sf.pollFreq"/></not>
+		</condition>
+
+		<condition property="pollmaxMessage" value="Property sf.pollMax is unset; defaulting Salesforce server maximum polling count to 60 blocks (1 hour with sf.pollFreq = 60,000; 60 polls x 60,000 milliseconds)" else="Salesforce server polling set by property sf.pollMax to ${sf.pollMax} polls">
+			<not><isset property="sf.pollMax"/></not>
+		</condition>
+		<condition property="pollmaxMessageWarnLevel" value="info" else='warn'>
+			<isset property="sf.pollMax"/>
+		</condition>
+		<echo message="${pollmaxMessage}" level="${pollmaxMessageWarnLevel}"/>
+		<condition property="sf.pollMax" value="60">
+			<not><isset property="sf.pollMax"/></not>
+		</condition>
+
+		<!-- Check logging level property -->
+		<condition property="loglevelMessage" value="Property sf.logLevel is unset; defaulting logging level to 'None'" else="Logging level is '${sf.logLevel}'">
+			<not><isset property="sf.logLevel"/></not>
+		</condition>
+		<condition property="loglevelMessageWarnLevel" value="info" else='warn'>
+			<isset property="sf.logLevel"/>
+		</condition>
+		<condition property="sf.logLevel" value="None">
+			<not><isset property="sf.logLevel"/></not>
+		</condition>
+		<condition property="legal-sf.logLevel" value="true">
+			<matches pattern="^(None|Debugonly|Db|Profiling|Callout|Detail)$" string="${sf.logLevel}" casesensitive="false"/>
+		</condition>
+		<fail message="Unknown logging level ${sf.logLevel}; allowed values (for sf.logLevel property) are: 'None', 'Debugonly', 'Db', 'Profiling', 'Callout', 'Detail'"
+			unless="legal-sf.logLevel"/>
+		<echo message="${loglevelMessage}" level="${loglevelMessageWarnLevel}"/>
+
+		<!-- Rename SF user names to local user... -->
+		<echo message="Renaming embedded SF user names to local user..." level="info"/>
+		<replaceregexp match="umn\.edu(\.\w+){1,2}" replace="umn.edu${sf.sboxName}" flags="g" byline="true">
+			<fileset dir="src" />
+		</replaceregexp>
+
+		<!-- Delete files that the Force.com API sometimes returns when
+			doing a Refresh from Server -->
+		<echo message="Removing unmanaged workflows from build directory (if extant)..." level="info"/>
+		<delete file="src/workflows/Question.workflow"/>
+		<delete file="src/workflows/Reply.workflow"/>
+		<delete file="src/workflows/SocialPost.workflow"/>
+		<delete file="src/workflows/SocialPersona.workflow"/>
+
+		<!-- Delete unmanaged email templates that may be present in the workspace -->
+		<echo message="Removing unmanaged email templates from build directory (if extant)..." level="info"/>
+		<!-- <delete dir=""/> -->
+		<!-- <delete file=""/> -->
+		<!-- <delete verbose="true">
+			<fileset dir="src/email/" casesensitive="no" erroronmissingdir="false">
+				<include name="Metaforce_Email_Templates/*.email"/>
+				<include name="Metaforce_Email_Templates/*.email-meta.xml"/>
+			</fileset>
+		</delete> -->
+
+		<!-- Delete unmanaged reports that may be present in the workspace -->
+		<echo message="Removing unmanaged reports from build directory (if extant)..." level="info"/>
+		<!-- <delete dir=""/> -->
+		<!-- <delete file=""/> -->
+		<!-- <delete verbose="true">
+			<fileset dir="src/reports/" casesensitive="no" erroronmissingdir="false">
+				<include name="*-meta.xml"/>
+				<exclude name="Metaforce_Reports-meta.xml"/>
+			</fileset>
+		</delete> -->
+		<!-- <delete dir="src/reports/Metaforce_Reports"/>  -->
+		<!-- <delete dir="src/reports"/>  -->
+
+		<property name="initialized" value="true"/>
+	</target>
+
+
+	<target name="deployCode" description="Run all deployment tasks" depends="deployInit">
+		<property name="subtask.runAllTestsOnDeploy" value="${sf.runAllTestsOnDeploy}"/>
+		<property name="subtask.validateOnly" value="${sf.validateOnly}"/>
+		<property name="subtask.runAllTestsAfterDeploy" value="${sf.runAllTestsAfterDeploy}"/>
+		<property name="subtask.scrubWhitespace" value="${sf.scrubWhitespace}"/>
+
+		<antcall target="subtaskRemoveTrailingSpace"/>
+		<antcall target="subtaskConvertLeadingSpacesToTabs"/>
+
+		<antcall target="subtaskValidate" />
+		<antcall target="subtaskDeploy" />
+		<antcall target="subtaskAllTests" />
+
+		<tstamp>
+			<format property="TEnd" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Ended at: ${TEnd}</echo>
+	</target>
+
+
+	<target name="validateOnly" description="Validate against sandbox; no changes deployed" depends="deployInit">
+		<property name="subtask.runAllTestsOnDeploy" value="false"/>
+		<property name="subtask.validateOnly" value="true"/>
+
+		<antcall target="subtaskValidate" />
+
+		<tstamp>
+			<format property="TEnd" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Ended at: ${TEnd}</echo>
+	</target>
+
+
+	<target name="deployOnly" description="Deploy to sandbox; no unit tests" depends="deployInit">
+		<property name="subtask.runAllTestsOnDeploy" value="false"/>
+		<property name="subtask.validateOnly" value="false"/>
+
+		<antcall target="subtaskDeploy" />
+
+		<tstamp>
+			<format property="TEnd" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Ended at: ${TEnd}</echo>
+	</target>
+
+
+	<target name="testOnly" description="Run extant sandbox unit tests; nothing deployed" depends="deployInit">
+		<property name="subtask.runAllTestsAfterDeploy" value="true"/>
+
+		<antcall target="subtaskAllTests" />
+
+		<tstamp>
+			<format property="TEnd" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Ended at: ${TEnd}</echo>
+	</target>
+
+
+	<target name="subtaskDeploy" depends="subtaskDeploy.Check" if="subtaskDeploy.Run">
+		<fail message="Incorrect initialization; perhaps you called an unpublished target?" unless="initialized"/>
+		<tstamp>
+			<format property="TStart" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Deploy task started at: ${TStart}</echo>
+		<!-- <antcall target="timeStampStart" /> -->
+
+		<echo message="Submitting deploy job to Saleforce ${sf.galaxy} Galaxy..." level="info"/>
+		<sf:deploy username="${sf.userName}"
+			password="${sf.password}"
+			serverurl="${sf.serverUrl}"
+			deployRoot="src"
+			runAllTests="${subtask.runAllTestsOnDeploy}"
+			logType="${sf.logLevel}"
+			maxPoll="${sf.pollMax}"
+			pollWaitMillis="${sf.pollFreq}">
+		</sf:deploy>
+
+		<tstamp>
+			<format property="TEnd" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Deploy task ended at: ${TEnd}</echo>
+	</target>
+
+	<target name="subtaskDeploy.Check">
+		<condition property="subtaskDeploy.Run">
+			<or>
+				<not><isset property="subtask.validateOnly"/></not>
+				<isfalse value="${subtask.validateOnly}"/>
+			</or>
+		</condition>
+		<condition property="subtaskDeploy.Message" value="Running deploy subtask..." else="Skipping deploy subtask">
+			<or>
+				<not><isset property="subtask.validateOnly"/></not>
+				<isfalse value="${subtask.validateOnly}"/>
+			</or>
+		</condition>
+		<echo message="${subtaskDeploy.Message}" level="info"/>
+	</target>
+
+
+	<target name="subtaskAllTests" depends="subtaskAllTests.Check" if="subtaskAllTests.Run">
+		<fail message="Incorrect initialization; perhaps you called an unpublished target?" unless="initialized"/>
+		<tstamp>
+			<format property="TStart" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Run-all-tests task started at: ${TStart}</echo>
+
+		<echo message="Submitting run-all-tests job to Saleforce ${sf.galaxy} Galaxy..." level="info"/>
+		<sf:deploy username="${sf.userName}"
+			password="${sf.password}"
+			serverurl="${sf.serverUrl}"
+			deployRoot="empty"
+			runAllTests="${subtask.runAllTestsAfterDeploy}"
+			ignoreWarnings="true"
+			rollbackOnError="false"
+			logType="${sf.logLevel}"
+			maxPoll="${sf.pollMax}"
+			pollWaitMillis="${sf.pollFreq}">
+<!--		<runTest>iContactforSF.ICUnitTests</runTest>  (to run individual tests) -->
+		</sf:deploy>
+
+		<tstamp>
+			<format property="TEnd" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Run-all-tests task ended at: ${TEnd}</echo>
+	</target>
+
+	<target name="subtaskAllTests.Check">
+		<condition property="subtaskAllTests.Run">
+			<and>
+				<isset property="subtask.runAllTestsAfterDeploy"/>
+				<istrue value="${subtask.runAllTestsAfterDeploy}"/>
+			</and>
+		</condition>
+		<condition property="subtaskAllTests.Message" value="Running independent run-all-tests subtask..." else="Skipping independent run-all-tests subtask">
+			<and>
+				<isset property="subtask.runAllTestsAfterDeploy"/>
+				<istrue value="${subtask.runAllTestsAfterDeploy}"/>
+			</and>
+		</condition>
+		<echo message="${subtaskAllTests.Message}" level="info"/>
+	</target>
+
+
+	<target name="subtaskValidate" depends="subtaskValidate.Check" if="subtaskValidate.Run">
+		<fail message="Incorrect initialization; perhaps you called an unpublished target?" unless="initialized"/>
+		<tstamp>
+			<format property="TStart" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Validate task started at: ${TStart}</echo>
+
+		<echo message="Submitting validate-only (no deploy/no org changes) job to Saleforce ${sf.galaxy} Galaxy..." level="info"/>
+		<sf:deploy username="${sf.userName}"
+			password="${sf.password}"
+			serverurl="${sf.serverUrl}"
+			deployRoot="src"
+			checkOnly="true"
+			runAllTests="${subtask.runAllTestsOnDeploy}"
+			logType="${sf.logLevel}"
+			maxPoll="${sf.pollMax}"
+			pollWaitMillis="${sf.pollFreq}">
+		</sf:deploy>
+
+		<tstamp>
+			<format property="TEnd" pattern="MM/dd/yyyy hh:mm aa" timezone="America/Chicago" locale="en,US"/>
+		</tstamp>
+		<echo level="info">Run-all-tests task ended at: ${TEnd}</echo>
+	</target>
+
+	<target name="subtaskValidate.Check">
+		<condition property="subtaskValidate.Run">
+			<and>
+				<isset property="subtask.validateOnly"/>
+				<istrue value="${subtask.validateOnly}"/>
+			</and>
+		</condition>
+		<condition property="subtaskValidate.Message" value="Running validate-only subtask..." else="Skipping validate-only subtask">
+			<and>
+				<isset property="subtask.validateOnly"/>
+				<istrue value="${subtask.validateOnly}"/>
+			</and>
+		</condition>
+		<echo message="${subtaskValidate.Message}" level="info"/>
+	</target>
+
+
+	<target name="RemoveTrailingSpace" description="Remove trailing whitespace from every line of every class">
+		<property name="subtask.scrubWhitespace" value="true"/>
+		<antcall target="subtaskRemoveTrailingSpace"/>
+	</target>
+
+	<target name="subtaskRemoveTrailingSpace" depends="ScrubWhitespace.Check" if="ScrubWhitespace.Run">
+		<echo message="Scrubbing trailing whitespace in all classes..." level="info"/>
+		<replaceregexp match="[ \t]+$" replace="" flags="gm" byline="true">
+			<fileset dir="src/classes" />
+			<fileset dir="src/triggers" />
+		</replaceregexp>
+	</target>
+
+	<target name="ConvertLeadingSpacesToTabs" description="Convert leading whitespace in all classes to tab characters">
+		<property name="subtask.scrubWhitespace" value="true"/>
+		<antcall target="subtaskConvertLeadingSpacesToTabs"/>
+	</target>
+
+	<target name="subtaskConvertLeadingSpacesToTabs" depends="ScrubWhitespace.Check" if="ScrubWhitespace.Run">
+		<echo message="Converting leading whitespace in all classes to tab characters..." level="info"/>
+		<!-- Mother never told me I'd have to write RegEx's like this! -->
+		<replaceregexp match="(?&lt;=(^\s+|^))[ ]{4}" replace="&#x9;" flags="gm" byline="true">
+			<fileset dir="src/classes" />
+			<fileset dir="src/triggers" />
+		</replaceregexp>
+	</target>
+
+	<target name="ScrubWhitespace.Check" >
+		<condition property="ScrubWhitespace.Run">
+			<and>
+				<isset property="subtask.scrubWhitespace"/>
+				<istrue value="${subtask.scrubWhitespace}"/>
+			</and>
+		</condition>
+		<condition property="ScrubWhitespace.Message" value="Running whitespace-scrubbing subtask..." else="Skipping whitespace-scrubbing subtask">
+			<and>
+				<isset property="subtask.scrubWhitespace"/>
+				<istrue value="${subtask.scrubWhitespace}"/>
+			</and>
+		</condition>
+		<echo message="${ScrubWhitespace.Message}" level="info"/>
+	</target>
+
+</project>

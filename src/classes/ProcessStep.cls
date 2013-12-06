@@ -5,7 +5,7 @@ global virtual interface ProcessStep {
 	Runnable getRunnable();
 	// Retrieve the Process associated with this ProcessStep
 	Process getProcess();
-	// Clean up after this step, 
+	// Clean up after this step,
 	// and advance to the next step in our process
-	void complete(); 
+	void complete();
 }

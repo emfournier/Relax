@@ -1,2 +1,14 @@
-/private
+.project
+.settings
+config
+*.sublime-*
+salesforce.schema
+Referenced Packages
 .DS_Store
+build.properties
+*.build.properties
+unchanged-paths.txt
+src/workflows/Question.workflow
+src/workflows/Reply.workflow
+src/workflows/SocialPost.workflow
+src/workflows/SocialPersona.workflow

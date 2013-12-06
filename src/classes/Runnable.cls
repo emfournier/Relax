@@ -9,5 +9,5 @@ global virtual interface Runnable {
 	// Run this item
 	void run();
 	// Clean up after and complete the Runnable
-	void complete(); 
+	void complete();
 }
